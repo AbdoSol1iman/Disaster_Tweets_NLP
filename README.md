@@ -6,11 +6,13 @@ Jupyter notebook, run top-to-bottom with no errors:
 1. **Task 1 — Dataset selection and text preprocessing** — inspection of the
    Kaggle *Disaster Tweets* dataset (11,370 tweets; `target`: 1 = real disaster,
    0 = not a real disaster) and a reproducible preprocessing pipeline producing
-   a `cleaned_text` column. No record is dropped and no label is changed.
+   a `cleaned_text` column **plus sentence-segmented token sequences**. No record
+   is dropped and no label is changed.
 2. **Task 2 — N-Gram language model** — a trigram model built with the Markov
    assumption and Maximum Likelihood Estimation, with Laplace (add-one)
-   smoothing, and step-by-step probability calculations for **three sentences
-   taken from the actual dataset** (every count comes from real data).
+   smoothing, trained on **individual sentence sequences**, and step-by-step
+   probability calculations for **three sentences taken from the actual dataset**
+   (every count comes from real data, traceable via tweet id + sentence index).
 
 ## Project structure
 
@@ -21,7 +23,8 @@ Disaster_Tweets_NLP/
 ├── data/
 │   └── tweets.csv                     # copy extracted from archive.zip
 ├── outputs/
-│   ├── processed_tweets.csv           # id, keyword, location, text, target, cleaned_text
+│   ├── processed_tweets.csv           # id, keyword, location, text, target,
+│   │                                  # cleaned_text, sentence_tokens (JSON), n_sentences
 │   ├── trigram_probabilities.csv      # top-100 trigrams: counts + MLE + Laplace probabilities
 │   └── sentence_probability_results.csv
 ├── requirements.txt
@@ -50,29 +53,41 @@ jupyter notebook Disaster_Tweets_NLP.ipynb           # run all cells in order
 ```
 
 Required NLTK resources (`stopwords`, `wordnet`, `omw-1.4`,
-`averaged_perceptron_tagger_eng`) are downloaded automatically by the notebook
-only if missing. Paths are relative, so the folder can be moved to another machine.
+`averaged_perceptron_tagger_eng`, `punkt`/`punkt_tab`) are downloaded
+automatically by the notebook only if missing. Paths are relative, so the folder
+can be moved to another machine.
 
 ## Preprocessing pipeline (Task 1)
 
 lowercasing → HTML entity/tag handling → URL/mention/`RT` removal →
 hashtag **word** preserved (`#Haiti` → `haiti`) → emoji/non-ASCII symbol removal →
-**TweetTokenizer** (contractions kept as single tokens, e.g. `don't`) →
-stop-word removal **preserving negations** (`not, no, never, don't, …`) →
-punctuation & purely numerical token removal → **WordNet lemmatization**
-with NLTK POS tags. Sentence segmentation was decided **against** (tweets are
-short, sentence boundaries unreliable) — justification with real numbers inside
-the notebook. Result: 11,370 → 11,370 records (7 tweets become empty
-`cleaned_text` because they contain only noise; they are kept).
+**sentence segmentation** (NLTK `punkt`; every sentence becomes its own model
+sequence) → **TweetTokenizer** (contractions kept as single tokens, e.g. `don't`)
+→ stop-word removal **preserving negations** (`not, no, never, don't, …`) →
+**strict, Unicode-aware punctuation removal**: *all* Unicode punctuation
+(categories `P*`) is removed at token edges **and** interiors; the apostrophe
+survives only between two letters (English contractions/possessives);
+interior punctuation acts as a token boundary (`oku.the` → `oku` + `the`,
+`school-book` → `school` + `book`); purely numerical, letter-less and
+single-character fragment tokens are dropped → **WordNet lemmatization**
+with NLTK POS tags.
 
-Corpus statistics after preprocessing: vocabulary **18,711** word types,
-**109,574** trigram positions (**90,431** distinct trigrams, **82,277** distinct
-bigram contexts).
+Result: 11,370 → 11,370 records (labels and original texts unchanged;
+7 noise-only tweets get an empty `cleaned_text` and are kept); punkt segments
+them into **17,541 sentence sequences**; **4,559 tweets (40.1%) contain more
+than one sentence** — whole-tweet training would have created artificial
+cross-boundary trigrams for these. Corpus statistics after preprocessing:
+vocabulary **18,258** word types, **78,050** distinct bigram contexts,
+**85,649** distinct trigrams over **109,277** trigram positions.
+Validated in-notebook: **0 residual punctuation tokens**, all negations
+survive (`not` × 733, `no` × 452, `never` × 142, `don't` × 281, …), and the
+model's start-context mass sums to exactly **1.0**.
 
 ## Trigram model (Task 2)
 
-For each tweet sequence two `<s>` start tokens are prepended so every chain-rule
-factor is a genuine trigram conditional. Probabilities:
+Each **sentence** sequence (not each tweet) gets two `<s>` start tokens, so every
+chain-rule factor is a genuine trigram conditional and **no trigram crosses a
+sentence boundary, by construction**. Probabilities:
 
 - **Raw MLE:** `P(w3|w1,w2) = Count(w1,w2,w3) / Count(w1,w2)`
 - **Laplace (add-one):** `P(w3|w1,w2) = (Count(w1,w2,w3) + 1) / (Count(w1,w2) + V)`
@@ -85,20 +100,28 @@ shows explicit zero counts: raw MLE collapses to 0, Laplace rescues it with
 
 ## The three dataset sentences (results)
 
-| # | tweet id | target | tokens | P (raw MLE) | P (Laplace) | log₁₀ P (Laplace) |
-|---|---|---|---|---|---|---|
-| 1 | 47 | 1 (real disaster) | 12 | 1.256 × 10⁻⁵ | 6.218 × 10⁻⁴⁸ | −108.7 (ln) |
-| 2 | 43 | 0 (not disaster) | 13 | 8.795 × 10⁻⁶ | 5.170 × 10⁻⁵² | −118.1 (ln) |
-| 3 | 27 | 1 (real disaster) | 12 | 9.772 × 10⁻⁶ | 2.208 × 10⁻⁴⁷ | −107.4 (ln) |
+| # | tweet id | sentence index | target | tokens | P (raw MLE) | P (Laplace) | ln P (Laplace) |
+|---|---|---|---|---|---|---|---|
+| 1 | 7 | 0 | 1 (real disaster) | 9 | 6.528 × 10⁻⁶ | 1.174 × 10⁻³⁶ | −82.7 |
+| 2 | 98 | 0 | 0 (not disaster) | 9 | 9.792 × 10⁻⁶ | 2.695 × 10⁻³⁵ | −79.6 |
+| 3 | 47 | 0 | 1 (real disaster) | 9 | 5.875 × 10⁻⁵ | 8.804 × 10⁻³⁶ | −80.7 |
 
-All counts and probabilities were recomputed independently from the exported
-`processed_tweets.csv` and matched exactly.
+- Sentence 1: *"Asansol: A BJP office in Salanpur village was set ablaze last night."*
+- Sentence 2: *"If two quakes have about the same magnitude, you cannot say one is the other's preshock or aftershock."* — the preserved negation `cannot` and the internal possessive apostrophe in `other's` are visible tokens.
+- Sentence 3: *"My friend (an army) just lost her father in an accident and her mom right now is still unconscious."*
+
+Verification: the exported `processed_tweets.csv` re-reads and **reproduces every
+n-gram count exactly** (round-trip assert in the notebook); the three probability
+calculations were also re-derived in a **separate process from the CSV exports
+only** and matched to full float precision; sentence provenance was re-established
+by re-segmenting the raw tweets independently.
 
 ## Limitations / assumptions
 
 - Add-one smoothing is a simple baseline (production systems use Kneser–Ney).
-- No end-of-sentence token, per the assignment's chain formula (~0.06% of mass
-  left unexplained, documented in a sanity check inside the notebook).
+- No end-of-sentence token, per the assignment's chain formula.
+- `punkt` segmentation is heuristic on noisy social media; truncated tweets yield
+  final fragment sentences, which are treated as ordinary sequences.
 - Digits, punctuation and non-English tweets are removed by design of the
   assignment's preprocessing; non-English tweets get an empty `cleaned_text`.
 - 147 verbatim duplicated texts are kept (dropping them is out of scope).
